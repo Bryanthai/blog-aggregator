@@ -55,4 +55,5 @@ func commandinit(commands *Commands) {
 	commands.register("follow", handlerFollow)
 	commands.register("following", handlerFollowing)
 	commands.register("unfollow", handlerUnfollow)
+	commands.register("browse", handlerBrowse)
 }

@@ -5,6 +5,8 @@ import(
 	"time"
 	"fmt"
 	"context"
+	"strconv"
+	"html"
 
 	"github.com/google/uuid"
 	"github.com/Bryanthai/blog-aggregator/internal/config"
@@ -66,11 +68,23 @@ func handlerUsers(s *State, cmd Command) error {
 }
 
 func handlerAgg(s *State, cmd Command) error {
-	rss, err := fetchFeed(context.Background(), "https://www.wagslane.dev/index.xml")
+	args := cmd.Arguments
+	if len(args) != 1 {
+		fmt.Printf("Incorrect usage of command!\n")
+		os.Exit(1)
+	}
+
+	var interval time.Duration
+	interval, err := time.ParseDuration(args[0])
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%v\n", rss)
+	fmt.Printf("Collecting feeds every %s\n", args[0])
+
+	ticker := time.NewTicker(interval)
+	for ; ;<- ticker.C {
+		scrapeFeeds(s)
+	}
 	return nil
 }
 
@@ -210,6 +224,59 @@ func handlerUnfollow(s *State, cmd Command) error {
 	return nil
 }
 
+func handlerBrowse(s *State, cmd Command) error {
+	dbQueries := s.Db
+	args := cmd.Arguments
+	user, err := dbQueries.GetUser(context.Background(), s.Cfg.Username)
+	if err != nil {
+		return err
+	}
+	if len(args) > 2 || len(args) < 1{
+		fmt.Printf("Incorrect usage of command!\n")
+		os.Exit(1)
+	}
+	feedID, err := dbQueries.GetFeedName(context.Background(), args[0])
+	if err != nil {
+		return err
+	}
+	var postsByUser database.GetPostsByUserParams
+	if len(args) == 2 {
+		limiting , _ := strconv.Atoi(args[1])
+		postsByUser.Limit = int32(limiting)
+		postsByUser.UserID = user.ID
+		postsByUser.FeedID = feedID
+		posts, err := dbQueries.GetPostsByUser(context.Background(), postsByUser)
+		if err != nil {
+			return err
+		}
+
+		for i, rPost := range posts {
+			fmt.Printf("%d. Title: %v\n", i,rPost.Title)
+			fmt.Printf("From URL: %v\n", rPost.Url)
+			fmt.Printf("Published at: %v\n", rPost.PublishedAt)
+			fmt.Printf("%v\n\n",rPost.Description)
+		}
+	} else {
+		postsByUser.Limit = 2
+		postsByUser.UserID = user.ID
+		postsByUser.FeedID = feedID
+		posts, err := dbQueries.GetPostsByUser(context.Background(), postsByUser)
+
+		if err != nil {
+			return err
+		}
+
+		for i, rPost := range posts {
+			fmt.Printf("%d. Title: %v\n", i,rPost.Title)
+			fmt.Printf("From URL: %v\n", rPost.Url)
+			fmt.Printf("Published at: %v\n", rPost.PublishedAt)
+			fmt.Printf("%v\n\n", rPost.Description)
+		}	
+	}
+
+	return nil
+}
+
 func handlerFollowing(s *State, cmd Command) error {
 	dbQueries := s.Db
 	followingFeeds, err := dbQueries.GetFeedFollowsForUser(context.Background(), s.Cfg.Username)
@@ -273,4 +340,57 @@ func (c *Commands) run(s *State, cmd Command) error {
 func (c *Commands) register(name string, f func(*State, Command) error) {
 	c.Handlers[name] = f
 	return
+}
+
+func scrapeFeeds(s *State) error {
+	dbQueries := s.Db
+	nextURL, err := dbQueries.GetNextFeedToFetch(context.Background())
+	if err != nil {
+		return err
+	}
+	var markingParam database.MarkFeedFetchedParams
+	markingParam.Url = nextURL
+	markingParam.LastFetchAt.Time = time.Now()
+	markingParam.LastFetchAt.Valid = true
+	err = dbQueries.MarkFeedFetched(context.Background(), markingParam)
+	if err != nil {
+		return err
+	}
+
+	Feed, err := fetchFeed(context.Background(), nextURL)
+	if err != nil{
+		return err
+	}
+	var postParams database.CreatePostParams
+	var upostParams database.UpdatePostParams
+	for _, post := range Feed.Channel.Item {
+		inPost, _ := dbQueries.CheckPostByURL(context.Background(), post.Link)
+		if (inPost != database.Post{}) {
+			upostParams.UpdatedAt = time.Now()
+			upostParams.Title = post.Title
+			upostParams.Description.String = html.UnescapeString(post.Description)
+			upostParams.Description.Valid = true
+			upostParams.PublishedAt = post.PubDate
+			upostParams.Url = post.Link
+			err = dbQueries.UpdatePost(context.Background(), upostParams)
+			if err != nil {
+				return err
+			}
+		} else {
+			postParams.ID = uuid.New()
+			postParams.FeedID, _ = dbQueries.GetFeedName(context.Background(), nextURL)
+			postParams.CreatedAt = time.Now()
+			postParams.UpdatedAt = time.Now()
+			postParams.Title = post.Title
+			postParams.Url = post.Link
+			postParams.Description.String = html.UnescapeString(post.Description)
+			postParams.Description.Valid = true
+			postParams.PublishedAt = post.PubDate
+			_, err = dbQueries.CreatePost(context.Background(), postParams)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

@@ -65,10 +65,36 @@ WHERE user_id = $1 AND feed_id = $2;
 
 -- name: MarkFeedFetched :exec
 UPDATE feeds
-SET last_fetched_at = $1, updated_at = $1
-WHERE id = $2;
+SET last_fetch_at = $1, updated_at = $1
+WHERE url = $2;
 
 -- name: GetNextFeedToFetch :one
-UPDATE feeds
-SET last_fetched_at = $1, updated_at = $1
-WHERE id = $2;
+SELECT url FROM feeds ORDER BY last_fetch_at ASC NULLS FIRST;
+
+-- name: CreatePost :one
+INSERT INTO posts (id, created_at, updated_at, title, url, description, published_at, feed_id)
+VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8
+)
+RETURNING *;
+
+-- name: GetPostsByUser :many
+SELECT posts.* 
+FROM posts INNER JOIN feed_follows ON posts.feed_id = feed_follows.feed_id
+WHERE feed_follows.user_id = $1 AND posts.feed_id = $2
+ORDER BY published_at DESC LIMIT $3;
+
+-- name: CheckPostByURL :one
+SELECT * FROM posts WHERE URL = $1; 
+
+-- name: UpdatePost :exec
+UPDATE posts
+SET updated_at = $1, title = $2, description = $3, published_at = $4
+WHERE url = $5;
